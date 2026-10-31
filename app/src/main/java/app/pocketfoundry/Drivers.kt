@@ -19,9 +19,14 @@ import java.security.MessageDigest
 object Drivers {
     class Driver(val id: String, val name: String, val detail: String)
 
+    const val MALI = "mali"
+    const val MALI_BCN = "mali-bcn"
+    const val PANVK = "panvk"
     const val ZINK = "zink"
     const val FREEDRENO = "freedreno"
     const val CPU = "cpu"
+
+    private val BUNDLED_IDS = setOf(MALI, MALI_BCN, PANVK, ZINK, FREEDRENO, CPU)
 
     private fun dir(paths: Paths) = File(paths.files, "drivers")
 
@@ -30,6 +35,9 @@ object Drivers {
         val mesa = paths.lib.list()?.firstOrNull { it.startsWith("libgallium-") }
             ?.removePrefix("libgallium-")?.removeSuffix(".so")?.let { "Mesa $it" } ?: "Mesa"
         val bundled = listOf(
+            Driver(MALI, "Mali-Adreno 24.2 (GED Boost)", "Bundled · Mali-G615 836MHz + GPU ASTC"),
+            Driver(MALI_BCN, "Mali-Adreno 24.2 (CPU BC1-BC7)", "Bundled · Mali-G615 836MHz + CPU BCn"),
+            Driver(PANVK, "PanVK (Mali-G615)", "Bundled · Native PanVK"),
             Driver(ZINK, "Zink + Turnip", "Bundled · $mesa"),
             Driver(FREEDRENO, "Freedreno", "Bundled · OpenGL, slower"),
             Driver(CPU, "CPU", "Experimental · slow, uses a lot of battery"),
@@ -47,17 +55,38 @@ object Drivers {
 
     fun chosen(context: Context): String {
         val id = Settings.driver(context)
-        return if (all(context).any { it.id == id }) id else ZINK
+        return if (all(context).any { it.id == id }) id else if (Gpu.mali) MALI else ZINK
     }
 
-    fun imported(context: Context) = chosen(context).let { it != ZINK && it != FREEDRENO && it != CPU }
+    fun imported(context: Context) = chosen(context) !in BUNDLED_IDS
 
     fun cpu(context: Context) = chosen(context) == CPU
 
-    fun panvk(context: Context) = chosen(context).startsWith("panvk-")
+    fun mali(context: Context) = chosen(context).let {
+        it == MALI || it == MALI_BCN || it == PANVK || it.startsWith("panvk-") || it.startsWith("mali-")
+    }
+
+    fun panvk(context: Context) = mali(context)
 
     /** Over Session's defaults, which are Zink on our Turnip. */
     fun environment(context: Context): Map<String, String> = when (val id = chosen(context)) {
+        MALI -> mapOf(
+            "VK_DRIVER_FILES" to File(Paths(context).prefix, "share/vulkan/icd.d/mali_adreno_icd.aarch64.json").path,
+            "MESA_VK_WSI_DEBUG" to "sw",
+            "DRIRC_CONFIGURATION" to "pan_enable_vertex_pipeline_stores_atomics=false"
+        )
+        MALI_BCN -> mapOf(
+            "VK_DRIVER_FILES" to File(Paths(context).prefix, "share/vulkan/icd.d/mali_adreno_icd.aarch64.json").path,
+            "MESA_VK_WSI_DEBUG" to "sw",
+            "MALI_CPU_BCN" to "1",
+            "PANVK_DEBUG" to "no_bc_emul",
+            "DRIRC_CONFIGURATION" to "pan_enable_vertex_pipeline_stores_atomics=false"
+        )
+        PANVK -> mapOf(
+            "VK_DRIVER_FILES" to File(Paths(context).prefix, "share/vulkan/icd.d/panfrost_icd.aarch64.json").path,
+            "MESA_VK_WSI_DEBUG" to "sw",
+            "DRIRC_CONFIGURATION" to "pan_enable_vertex_pipeline_stores_atomics=false"
+        )
         ZINK -> emptyMap()
         FREEDRENO -> mapOf("MESA_LOADER_DRIVER_OVERRIDE" to "kgsl")
         // llvmpipe, Mesa on the CPU. Software GLX picks Zink while the override names it, so it names llvmpipe.
@@ -79,7 +108,7 @@ object Drivers {
     private val OPTION = Regex("""([A-Za-z_][A-Za-z0-9_]*)=(\S*)""")
 
     fun remove(context: Context, id: String) {
-        if (id == ZINK || id == FREEDRENO || id == CPU) return
+        if (id in BUNDLED_IDS) return
         File(dir(Paths(context)), id).deleteRecursively()
     }
 

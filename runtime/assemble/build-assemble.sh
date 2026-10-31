@@ -26,6 +26,16 @@ cp /out/wm/pocketfoundry-wm $OUT/bin/
 gcc -shared -fPIC -O2 -Wl,-soname,libwayland-client.so.0 -o $OUT/lib/libwayland-client.so.0 /runtime/assemble/wayland-client.c
 gcc -shared -fPIC -O2 -Wl,-soname,libSPIRV-Tools.so -o $OUT/lib/libSPIRV-Tools.so /runtime/assemble/spirv-tools.c
 
+# Mali-Adreno 24.2 Vulkan shim + MediaTek /proc/ged 836MHz GPU Booster + PanVK-kbase v26.3.1
+if [ -f /runtime/mali-adreno/vulkan_adreno_shim.c ]; then
+    gcc -O3 -march=armv8.2-a+fp16+dotprod -shared -fPIC \
+        /runtime/mali-adreno/vulkan_adreno_shim.c \
+        -o $OUT/lib/libvulkan_mali_adreno.so -ldl -lpthread -lm
+    mkdir -p $OUT/share/vulkan/icd.d
+    cp /runtime/mali-adreno/mali_adreno_icd.aarch64.json $OUT/share/vulkan/icd.d/
+    cp /runtime/mali-adreno/panfrost_icd.aarch64.json $OUT/share/vulkan/icd.d/
+fi
+
 cp -a /out/sdl$PREFIX/lib/libSDL3.so* $OUT/lib/
 cp /out/sdl$PREFIX/bin/pocketfoundry-padtest /out/sdl$PREFIX/bin/pocketfoundry-inputtest $OUT/bin/
 

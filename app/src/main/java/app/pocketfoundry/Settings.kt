@@ -56,7 +56,7 @@ object Settings {
     fun setBorder(context: Context, dp: Int) = prefs(context).edit().putInt("border", dp).apply()
 
     /** Factorio's graphics-quality, missing from its menus: "medium" halves the sprites, ~600 MB less memory. */
-    fun spriteQuality(context: Context) = prefs(context).getString("spriteQuality", null) ?: if (Drivers.cpu(context)) "medium" else "high"
+    fun spriteQuality(context: Context) = prefs(context).getString("spriteQuality", null) ?: if (Drivers.cpu(context) || Drivers.mali(context)) "medium" else "high"
     fun setSpriteQuality(context: Context, quality: String) = prefs(context).edit().putString("spriteQuality", quality).apply()
 
     /** Factorio's extra effects off (smoke, clouds, decoratives, shadows, terrain effects…): fewer pixels to draw. */
@@ -67,14 +67,31 @@ object Settings {
     fun setLightApplied(context: Context, on: Boolean) = prefs(context).edit().putBoolean("lightApplied", on).apply()
 
     /** Without a GPU driver for the phone, the CPU's. */
-    fun driver(context: Context) = prefs(context).getString("driver", null) ?: if (Gpu.supported) Drivers.ZINK else Drivers.CPU
+    fun driver(context: Context): String {
+        val p = prefs(context)
+        if (Gpu.mali && !p.getBoolean("maliDriverAutoSet", false)) {
+            p.edit()
+                .putBoolean("maliDriverAutoSet", true)
+                .putString("driver", Drivers.MALI)
+                .putString("spriteQuality", "medium")
+                .putBoolean("lightGraphics", false)
+                .apply()
+            return Drivers.MALI
+        }
+        return p.getString("driver", null) ?: when {
+            Gpu.mali -> Drivers.MALI
+            Gpu.supported -> Drivers.ZINK
+            else -> Drivers.CPU
+        }
+    }
     fun setDriver(context: Context, id: String) = prefs(context).edit().putString("driver", id).apply()
     fun clearDriver(context: Context) = prefs(context).edit().remove("driver").apply()
 
     /** Moving to or from the CPU driver: the sprites, effects and resolution that suit it, or the GPU's. */
     fun applyDriverDefaults(context: Context) {
         val cpu = Drivers.cpu(context)
-        setSpriteQuality(context, if (cpu) "medium" else "high")
+        val mali = Drivers.mali(context)
+        setSpriteQuality(context, if (cpu || mali) "medium" else "high")
         setLightGraphics(context, cpu)
         setResolutionScale(context, startingResolutionScale(context))
     }

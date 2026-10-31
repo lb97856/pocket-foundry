@@ -12,12 +12,15 @@ object Gpu {
         runCatching { renderer() }.onFailure { Log.w("PocketFoundry", "Couldn't ask the GPU's name", it) }.getOrNull()
     }
 
+    val mali: Boolean get() = name?.contains("Mali", ignoreCase = true) == true
+
     /**
      * Turnip starts at Adreno 6xx (older ones also lack the kernel's dma-buf heaps freedreno needs). A GPU that
      * couldn't be named, or an Adreno named without three digits (the laptops' X1-85), gets the benefit of the doubt.
      */
     val supported: Boolean get() {
         val name = name ?: return true
+        if (mali) return true
         if (!name.contains("Adreno")) return false
         val number = ADRENO.find(name)?.groupValues?.get(1)?.toInt() ?: return true
         return number >= 600
