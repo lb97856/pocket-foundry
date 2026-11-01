@@ -39,23 +39,82 @@ Tested on **Xiaomi Poco X6 Pro (MediaTek Dimensity 8300-Ultra, ARM Mali-G615 MC6
 
 ---
 
-## What's New in the Mali GPU Edition
+## Architecture of the `Mali-Adreno 24.2` Driver Stack
 
-1. **Bundled `Mali-Adreno 24.2` Vulkan Shim (`libvulkan_mali_adreno.so`)**
-   - Built directly into the runtime alongside `PanVK-kbase v26.3.1` (`libvulkan_panfrost.so`).
-   - Automatically selected out of the box whenever an ARM Mali GPU is detected.
-   - Offers two selectable built-in Mali driver profiles in **Settings -> Driver**:
-     - **`Mali-Adreno 24.2 (GPU Boost)`** *(Default)* — Full hardware GPU acceleration + MediaTek `/proc/ged` DVFS boost.
-     - **`Mali-Adreno 24.2 (CPU BC1-BC7)`** — Hybrid mode that offloads BC1–BC7 texture decompression to multi-threaded ARM64 NEON worker threads (`VULKAN_MALI_CPU_BCN=1`) to save GPU tiler memory on lower-RAM devices.
-2. **MediaTek `/proc/ged` Hardware GPU Clock Booster (`836+ MHz`)**
-   - Prevents MediaTek's kernel DVFS governor from downclocking the Mali GPU between 2D sprite batches, maintaining a steady **56–60 FPS** (60 UPS engine cap) in Factorio.
-   - Safely no-ops on non-MediaTek SoCs (Google Tensor, Samsung Exynos, Rockchip) with zero overhead.
-3. **CSF Tiler Heap OOM Fix (PanVK-kbase `v26.3.1` Incremental Rendering)**
-   - Eliminates `mali 13000000.mali: CSF group 0 tiler heap OOM notification` and `zink: DEVICE LOST!` crashes at 55–89% sprite atlas loading on Valhall / 5th Gen CSF GPUs (`Mali-G610`, `G710`, `G615`, `G715`, `G720`, `G925`).
-4. **Automatic Save-Load Freeze Workaround (`DRIRC_CONFIGURATION`)**
-   - Automatically injects `DRIRC_CONFIGURATION=pan_enable_vertex_pipeline_stores_atomics=false` on Mali GPUs so loading or starting a map in Factorio 2.1.x never deadlocks.
-5. **Multi-`VkInstance` Lifecycle Refcounting**
-   - Properly tracks multiple simultaneous `VkInstance` objects created by Mesa Zink (`vkCreateInstance` / `vkDestroyInstance`), preventing `GL_OUT_OF_MEMORY (1285)` during OpenGL context recreation.
+Factorio on Linux ARM64 uses OpenGL 3.3+ with heavy BC1–BC7 (`S3TC`/`BPTC`/`RGTC`) compressed sprite atlases. On Android phones with ARM Mali GPUs, the proprietary `/vendor/lib64/egl/libGLES_mali.so` driver is built against Android's Bionic libc and cannot be loaded directly inside a pure Linux `glibc` container without symbol conflicts, while stock open-source PanVK struggles with CSF tiler memory exhaustion and aggressive MediaTek GPU downclocking.
+
+To solve this, Pocket Foundry Mali Edition introduces a **two-layer glibc Vulkan driver stack**:
+
+```text
+Factorio 2.1.x (Linux ARM64 ELF, OpenGL 3.3)
+   │
+   ▼
+Mesa Zink (OpenGL-on-Vulkan translation layer)
+   │
+   ▼
+Layer 1: libvulkan_mali_adreno.so (Mali-Adreno 24.2 Vulkan Shim — runtime/mali-adreno/vulkan_adreno_shim.c)
+   ├─ Vulkan Feature & Format Bridge (Desktop/Adreno capability spoofing for Zink)
+   ├─ Dual-Mode BC1–BC7 Texture Engine (GPU ASTC/Compute passthrough OR Multi-threaded ARM64 NEON CPU decoder)
+   ├─ MediaTek /proc/ged Hardware DVFS Booster (locks GPU clock at 836+ MHz during active rendering)
+   └─ Multi-VkInstance Reference Counting (prevents premature ICD teardown & GL_OUT_OF_MEMORY 1285)
+   │
+   ▼
+Layer 2: libvulkan_panfrost.so (PanVK-kbase v26.3.1 / build 122i)
+   ├─ Direct ioctl backend for ARM Mali kbase kernel driver (/dev/mali0)
+   ├─ CSF v10–v13 Incremental Rendering (flushes tiler heap on OOM instead of VK_ERROR_DEVICE_LOST)
+   └─ JM v7–v9 Bifrost/Valhall support
+   │
+   ▼
+Android Kernel: /dev/mali0 (Mali-G615 CSF kbase) + /proc/ged (MediaTek GPU Extension Device)
+```
+
+### Deep Dive into Driver Components ([`vulkan_adreno_shim.c`](runtime/mali-adreno/vulkan_adreno_shim.c))
+
+#### 1. Vulkan Capability & Format Bridge
+Mesa Zink requires desktop-class Vulkan features and format bits to expose a compliant OpenGL 3.3 context to Factorio. `libvulkan_mali_adreno.so` intercepts `vkGetPhysicalDeviceFeatures`, `vkGetPhysicalDeviceFeatures2`, `vkGetPhysicalDeviceProperties`, and `vkGetPhysicalDeviceFormatProperties` to enable and bridge:
+- `textureCompressionBC`, `shaderClipDistance`, `shaderCullDistance`, `dualSrcBlend`, `fillModeNonSolid`, `wideLines`, `largePoints`, `samplerAnisotropy`, `multiViewport`, `independentBlend`, `logicOp`, and `robustBufferAccess`.
+- Full format feature flags (`SAMPLED_IMAGE`, `BLIT_SRC`, `TRANSFER_SRC`, `TRANSFER_DST`, `SAMPLED_IMAGE_FILTER_LINEAR`) across all 16 Vulkan BC1–BC7 block-compressed formats (`VK_FORMAT_BC1_RGB_UNORM_BLOCK` through `VK_FORMAT_BC7_SRGB_BLOCK`).
+
+#### 2. Dual-Mode BC1–BC7 Texture Decompression Engine
+ARM Mali GPUs natively decode `ASTC` and `ETC2` in hardware, but lack dedicated silicon for desktop `BC4`/`BC5`/`BC6H`/`BC7` formats used by Factorio 2.1.x sprite atlases. Our driver provides two selectable profiles in **Settings -> Driver**:
+- **`Mali-Adreno 24.2 (GPU Boost)` *(Default)***: Detects that the underlying `PanVK-kbase v26.3.1` backend natively advertises BCn emulation via GPU compute/ASTC shaders (`g_real_supports_bcn = 1`) and passes compressed textures zero-copy straight to the GPU.
+- **`Mali-Adreno 24.2 (CPU BC1-BC7)` *(Forced via `VULKAN_MALI_CPU_BCN=1`)*:** Intercepts `vkCreateImage`, `vkGetImageMemoryRequirements`, `vkCmdCopyBufferToImage`, and `vkCmdCopyBufferToImage2`, transparently substituting `R8G8B8A8_UNORM` / `R8G8B8A8_SRGB` images on the GPU and decoding BC1, BC2, BC3, BC4, BC5, BC6H, and BC7 blocks in parallel across an **8-thread ARM64 NEON worker pool**. Ideal for older Mali GPUs or devices with 4–6 GB RAM.
+
+#### 3. MediaTek `/proc/ged` Hardware GPU Clock Booster (`836+ MHz`)
+Because Factorio is a 2D isometric engine, CPU-side entity updates (UPS) and GPU draw calls alternate in bursts. On MediaTek Dimensity/Helio chips, the kernel DVFS governor misinterprets these brief gaps and downclocks the Mali GPU to ~300 MHz, causing stutter (30–40 FPS).
+- `libvulkan_mali_adreno.so` opens `/proc/ged` at initialization and dispatches periodic kernel boost packets during `vkQueueSubmit` / `vkQueuePresentKHR`.
+- This keeps the Mali-G615 GPU frequency boosted at **836+ MHz**, delivering a rock-solid **56–60 FPS** (locked at Factorio's 60 FPS/UPS engine cap).
+- On non-MediaTek chips (Google Tensor, Samsung Exynos), `/proc/ged` is absent and the booster cleanly disables itself with zero overhead.
+
+#### 4. CSF Tiler Heap OOM Fix (`PanVK-kbase v26.3.1` Incremental Rendering)
+During Factorio startup (at 55%–89% `Loading sprites...`), Factorio composites thousands of sprites into massive 4096×4096 atlases in parallel. On Valhall / 5th Gen CSF GPUs (`Mali-G610`, `G710`, `G615`, `G715`, `G720`, `G925`), older PanVK builds exhausted the kernel CSF tiler heap:
+```text
+mali 13000000.mali: CSF group 0 tiler heap OOM notification
+zink: DEVICE LOST!
+```
+By pairing our shim with **`PanVK-kbase v26.3.1` (`build 122i`)**, CSF Incremental Rendering automatically flushes and recycles tiler heap chunks mid-renderpass when tiler memory pressure spikes, completing sprite loading cleanly at `Medium` or `High` quality.
+
+#### 5. Save-Load Deadlock Prevention (`DRIRC_CONFIGURATION`)
+In Factorio 2.1.x, enabling `vertexPipelineStoresAndAtomics` on PanVK triggers a shader compiler / CSF queue stall the moment a map finishes loading. Pocket Foundry automatically injects:
+```ini
+DRIRC_CONFIGURATION=pan_enable_vertex_pipeline_stores_atomics=false
+```
+for all Mali GPUs so saves load and run without freezing.
+
+#### 6. Multi-`VkInstance` Reference Counting
+During startup and window creation, SDL2 and Mesa Zink create a probe `VkInstance`, create the main rendering `VkInstance`, and then destroy the probe instance. Naive shims call `dlclose()` on the backend ICD as soon as the first `vkDestroyInstance` runs, corrupting the active GL context (`GL_OUT_OF_MEMORY (1285)`). Our shim atomically refcounts `g_active_instances` and keeps `libvulkan_panfrost.so` resident until the final instance is destroyed.
+
+### Driver Environment Variables Reference
+
+You can customize driver behavior in **Settings -> Driver -> Options**:
+
+| Variable | Default on Mali | Description |
+|---|---|---|
+| `DRIRC_CONFIGURATION` | `pan_enable_vertex_pipeline_stores_atomics=false` | Disables vertex pipeline stores/atomics in PanVK/Zink to prevent Factorio 2.1.x map-load freezes. |
+| `VULKAN_MALI_CPU_BCN` | `0` (`1` in CPU BC1-BC7 profile) | Set to `1` to force multi-threaded ARM64 NEON CPU decompression of BC1–BC7 textures into `RGBA8`. |
+| `VULKAN_MALI_SPOOF_ADRENO` | `0` | Set to `1` to spoof `Adreno (TM) 740` (`vendorID=0x5143`, `deviceID=0x43050a01`) in `VkPhysicalDeviceProperties`. |
+| `VULKAN_MALI_REAL_ICD` | `/usr/lib/libvulkan_panfrost.so` | Path to the underlying Vulkan ICD loaded by `libvulkan_mali_adreno.so`. |
+| `PANVK_DEBUG` | *(auto)* | PanVK backend debug flags (e.g., `noafbc`, `bc_compute`, `sync`). |
 
 ---
 
