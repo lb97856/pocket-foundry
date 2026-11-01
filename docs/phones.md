@@ -19,11 +19,11 @@ Works **out of the box** in this build! Pocket Foundry bundles both `libvulkan_m
 
 | Mali Architecture | Models | Bundled Driver Profile | Performance / Notes |
 |---|---|---|---|
-| **CSF v10–v13 (Valhall Gen 3/4 & 5th Gen)** | **Mali-G615**, G610, G710, G310, G715, Immortalis-G715, G620, G720, Immortalis-G720, G625, G725, Immortalis-G925, G1-Ultra/Pro/Premium | `Mali-Adreno 24.2 (GPU Boost)` | **59–64 FPS, 60 UPS** on Mali-G615 (Poco X6 Pro / realme 16 Pro). Uses CSF Incremental Rendering to prevent tiler heap OOM crashes during sprite loading. |
+| **CSF v10–v13 (Valhall Gen 3/4 & 5th Gen)** | **Mali-G615**, G610, G710, G310, G715, Immortalis-G715, G620, G720, Immortalis-G720, G625, G725, Immortalis-G925, G1-Ultra/Pro/Premium | `Mali-Adreno 24.2 (GPU Boost)` | **56–60 FPS, 60 UPS** (engine cap) on Mali-G615 (Poco X6 Pro / realme 16 Pro). Uses CSF Incremental Rendering to prevent tiler heap OOM crashes during sprite loading. |
 | **JM v9 (Valhall Gen 1/2)** | Mali-G57, G68, G77, G78, G78AE | `Mali-Adreno 24.2 (GPU Boost)` or `Mali-Adreno 24.2 (CPU BC1-BC7)` | Plays smoothly with Medium sprites. |
 | **JM v7 (Bifrost)** | Mali-G51, G52, G71, G72, G76 | `Mali-Adreno 24.2 (CPU BC1-BC7)` | Uses multi-threaded ARM NEON CPU BC1–BC7 texture decompression (`VULKAN_MALI_CPU_BCN=1`). |
 
-![64 FPS on Mali-G615](screenshots/mali_gameplay_64fps.jpg)
+![60 FPS on Mali-G615](screenshots/mali_gameplay_60fps.jpg)
 
 ---
 
@@ -57,7 +57,7 @@ needed. Phones without a GPU driver start with it. It's experimental: slow, and 
 
 | Phone | GPU | Driver | Result |
 |---|---|---|---|
-| **Xiaomi Poco X6 Pro** | **Mali-G615 MC6** | **Bundled `Mali-Adreno 24.2 (GPU Boost)`** | **59–64 FPS, 60 UPS** (MediaTek `/proc/ged` 836+ MHz boost + PanVK v26.3.1) |
+| **Xiaomi Poco X6 Pro** | **Mali-G615 MC6** | **Bundled `Mali-Adreno 24.2 (GPU Boost)`** | **56–60 FPS, 60 UPS** (MediaTek `/proc/ged` 836+ MHz boost + PanVK v26.3.1) |
 | realme 16 Pro | Mali-G615 | Bundled `Mali-Adreno 24.2` / PanVK v26.3.1 | 60 FPS, High/Medium sprites |
 | Pixel 6 | Mali-G78 | Bundled / PanVK-kbase | Plays (Medium sprites) |
 | Poco M6 Pro 4G | Mali-G57 | Bundled / PanVK-kbase | 25–30 FPS, 60 UPS |
